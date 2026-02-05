@@ -3,43 +3,65 @@
 
 import Foundation
 
-public enum DataFetchError: Error {
-    case networkError(Error)
-    case decodingError(Error)
+public enum NetworkError: Error {
+    case invalidURL
+    case requestFailed(Error)
+    case noData
+    case decodingFailed(Error)
 }
 
-public class WebService {
+@available(iOS 15.0, *)
+public final class NetworkService {
     
     public init() {}
     
-    public func fetchData<T: Decodable>(from urlString: String, resultType: T.Type, completion: @escaping (Result<T, DataFetchError>) -> Void) {
+    // MARK: - Async/Await API
+    
+    /// Fetches and decodes data from the given URL
+    /// - Parameters:
+    ///   - urlString: The URL string to fetch from
+    ///   - type: The type to decode to (can be inferred)
+    /// - Returns: The decoded object
+    /// - Throws: NetworkError if the request fails
+    public func fetch<T: Decodable>(
+        from urlString: String,
+        as type: T.Type = T.self
+    ) async throws -> T {
         guard let url = URL(string: urlString) else {
-            completion(.failure(.networkError(NSError(domain: "", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"]))))
-            return
+            throw NetworkError.invalidURL
         }
         
-        let task = URLSession.shared.dataTask(with: url) { data, response, error in
-            if let error = error {
-                print("Network error: \(error.localizedDescription)")
-                completion(.failure(.networkError(error)))
-                return
-            }
-            
-            guard let data = data else {
-                print("No data received")
-                completion(.failure(.networkError(NSError(domain: "", code: 0, userInfo: [NSLocalizedDescriptionKey: "No data received"]))))
-                return
-            }
-            
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch let error as DecodingError {
+            throw NetworkError.decodingFailed(error)
+        } catch {
+            throw NetworkError.requestFailed(error)
+        }
+    }
+    
+    // MARK: - Completion Handler API (for backwards compatibility)
+    
+    /// Fetches and decodes data from the given URL using completion handler
+    /// - Parameters:
+    ///   - urlString: The URL string to fetch from
+    ///   - type: The type to decode to (can be inferred)
+    ///   - completion: Result with decoded object or error
+    public func fetch<T: Decodable>(
+        from urlString: String,
+        as type: T.Type = T.self,
+        completion: @escaping (Result<T, NetworkError>) -> Void
+    ) {
+        Task {
             do {
-                let decodedData = try JSONDecoder().decode(T.self, from: data)
-                completion(.success(decodedData))
+                let result = try await fetch(from: urlString, as: type)
+                completion(.success(result))
+            } catch let error as NetworkError {
+                completion(.failure(error))
             } catch {
-                print("Decoding error: \(error.localizedDescription)")
-                completion(.failure(.decodingError(error)))
+                completion(.failure(.requestFailed(error)))
             }
         }
-        
-        task.resume()
     }
 }
